@@ -1,0 +1,19 @@
+import { authorize } from "@/lib/auth";
+import { ensureSchema,getPool } from "@/lib/db";
+import sql from "mssql";
+
+export const dynamic="force-dynamic";
+
+export async function GET(request:Request){const auth=authorize(request,["Billing.Admin","Billing.Operator","Billing.Reader"]);if(auth.response)return auth.response;try{await ensureSchema();const result=await(await getPool()).request().query("SELECT Id,InvoiceNumber,PaymentDate,Amount,PaymentMethod,Reference,CreatedAt,ReversedAt,ReversalReason FROM dbo.BillingPayments ORDER BY Id DESC");return Response.json(result.recordset);}catch(error){console.error(error);return Response.json({error:"Payments unavailable"},{status:503});}}
+
+export async function POST(request:Request){
+  const auth=authorize(request,["Billing.Admin","Billing.Operator"]);if(auth.response)return auth.response;
+  try{await ensureSchema();const body=await request.json();const amount=Number(body.amount);const key=String(body.idempotencyKey||request.headers.get("idempotency-key")||"").trim();if(!body.invoiceNumber||!body.paymentDate||!Number.isFinite(amount)||amount<=0||!key)return Response.json({error:"Invoice, date, positive amount, and idempotency key are required"},{status:400});const pool=await getPool();const transaction=new sql.Transaction(pool);await transaction.begin();try{
+    const prior=await new sql.Request(transaction).input("key",sql.NVarChar(100),key).query("SELECT Id,InvoiceNumber,Amount FROM dbo.BillingPayments WHERE IdempotencyKey=@key");if(prior.recordset.length){await transaction.commit();return Response.json({...prior.recordset[0],duplicate:true},{status:200});}
+    const invoice=await new sql.Request(transaction).input("number",sql.NVarChar(40),body.invoiceNumber).query("SELECT Balance,Status FROM dbo.BillingInvoices WITH(UPDLOCK,ROWLOCK) WHERE InvoiceNumber=@number");if(!invoice.recordset.length)throw new Error("Invoice not found");if(["Draft","Voided","Paid"].includes(invoice.recordset[0].Status))throw new Error(`Payments cannot be applied to ${invoice.recordset[0].Status} invoices`);const balance=Number(invoice.recordset[0].Balance);if(amount>balance)throw new Error("Payment exceeds balance");const remaining=Math.round((balance-amount)*100)/100;
+    const inserted=await new sql.Request(transaction).input("number",sql.NVarChar(40),body.invoiceNumber).input("date",sql.Date,body.paymentDate).input("amount",sql.Decimal(19,2),amount).input("method",sql.NVarChar(60),body.method||"Bank transfer").input("reference",sql.NVarChar(160),body.reference||"").input("key",sql.NVarChar(100),key).query("INSERT dbo.BillingPayments(InvoiceNumber,PaymentDate,Amount,PaymentMethod,Reference,IdempotencyKey) OUTPUT INSERTED.Id VALUES(@number,@date,@amount,@method,@reference,@key)");
+    await new sql.Request(transaction).input("number",sql.NVarChar(40),body.invoiceNumber).input("remaining",sql.Decimal(19,2),remaining).input("status",sql.NVarChar(30),remaining===0?"Paid":"Partially Paid").query("UPDATE dbo.BillingInvoices SET Balance=@remaining,Status=@status,UpdatedAt=SYSUTCDATETIME() WHERE InvoiceNumber=@number");
+    await new sql.Request(transaction).input("entityId",sql.NVarChar(100),String(inserted.recordset[0].Id)).input("actorId",sql.NVarChar(100),auth.principal!.userId).input("actorEmail",sql.NVarChar(320),auth.principal!.email).input("after",sql.NVarChar(sql.MAX),JSON.stringify({...body,amount})).query("INSERT dbo.BillingAuditLog(EntityType,EntityId,Action,ActorId,ActorEmail,AfterJson) VALUES('Payment',@entityId,'Recorded',@actorId,@actorEmail,@after)");
+    await transaction.commit();return Response.json({id:inserted.recordset[0].Id,remaining},{status:201});
+  }catch(error){await transaction.rollback();throw error;}}catch(error){console.error(error);return Response.json({error:error instanceof Error?error.message:"Could not record payment"},{status:400});}
+}
