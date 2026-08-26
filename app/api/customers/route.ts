@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request:Request) {
   const auth=authorize(request,["Billing.Admin","Billing.Operator","Billing.Reader"]);if(auth.response)return auth.response;
-  try { await ensureSchema(); const result = await (await getPool()).request().query("SELECT c.*,renewal.NextContractRenewal FROM dbo.BillingCustomers c OUTER APPLY (SELECT MIN(bc.RenewalDate) AS NextContractRenewal FROM dbo.BillingContracts bc WHERE bc.CustomerId=c.Id AND bc.Status='Active' AND bc.RenewalDate>=CAST(GETUTCDATE() AS date)) renewal ORDER BY c.LegalName"); return Response.json(result.recordset.map(customerFromRow)); }
+  try { await ensureSchema(); const result = await (await getPool()).request().query("SELECT c.*,contracts.ContractCount,contracts.ActiveContractCount,contracts.NextContractRenewal FROM dbo.BillingCustomers c OUTER APPLY (SELECT COUNT(*) AS ContractCount,SUM(CASE WHEN bc.Status='Active' THEN 1 ELSE 0 END) AS ActiveContractCount,MIN(CASE WHEN bc.Status='Active' AND bc.RenewalDate>=CAST(GETUTCDATE() AS date) THEN bc.RenewalDate END) AS NextContractRenewal FROM dbo.BillingContracts bc WHERE bc.CustomerId=c.Id) contracts ORDER BY c.LegalName"); return Response.json(result.recordset.map(customerFromRow)); }
   catch (error) { console.error(error); return Response.json({ error: "Database unavailable" }, { status: 503 }); }
 }
 

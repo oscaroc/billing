@@ -128,5 +128,5 @@ export async function ensureSchema() {
 
 export function customerFromRow(row: Record<string, unknown>) {
   const date = (value: unknown) => value instanceof Date ? value.toISOString().slice(0, 10) : value ? String(value).slice(0, 10) : "";
-  return { id: row.Id, legalName: row.LegalName, contactName: row.ContactName, email: row.Email, address: row.Address, taxId: row.TaxId, currency: row.Currency, tenant: row.Tenant, renewalDate: date(row.NextContractRenewal), status: row.Status };
+  return { id: row.Id, legalName: row.LegalName, contactName: row.ContactName, email: row.Email, address: row.Address, taxId: row.TaxId, currency: row.Currency, tenant: row.Tenant, contractCount:Number(row.ContractCount || 0), activeContractCount:Number(row.ActiveContractCount || 0), nextRenewalDate:date(row.NextContractRenewal), status: row.Status };
 }
