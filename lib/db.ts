@@ -6,17 +6,18 @@ let schemaReady: Promise<void> | null = null;
 
 export async function getPool() {
   if (!poolPromise) {
-    poolPromise = (async () => {
-      const credential = new ManagedIdentityCredential(process.env.AZURE_CLIENT_ID ? { clientId: process.env.AZURE_CLIENT_ID } : undefined);
-      const token = await credential.getToken("https://database.windows.net/.default");
-      return new sql.ConnectionPool({
-        server: process.env.SQL_SERVER || "nivora-prod-sql2.database.windows.net",
-        database: process.env.SQL_DATABASE || "nivora",
-        authentication: { type: "azure-active-directory-access-token", options: { token: token?.token || "" } },
-        options: { encrypt: true, trustServerCertificate: false, connectTimeout: 30000 },
-        pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
-      }).connect();
-    })();
+    // Hand the driver the credential, not a token: it calls getToken() per
+    // connection and the credential refreshes on expiry. Fetching one token
+    // here pinned the pool to a ~1h token, after which every new connection
+    // failed with ELOGIN until the container restarted.
+    const credential = new ManagedIdentityCredential(process.env.AZURE_CLIENT_ID ? { clientId: process.env.AZURE_CLIENT_ID } : undefined);
+    poolPromise = new sql.ConnectionPool({
+      server: process.env.SQL_SERVER || "nivora-prod-sql2.database.windows.net",
+      database: process.env.SQL_DATABASE || "nivora",
+      authentication: { type: "token-credential", options: { credential } },
+      options: { encrypt: true, trustServerCertificate: false, connectTimeout: 30000 },
+      pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+    }).connect().catch((error) => { poolPromise = null; throw error; });
   }
   return poolPromise;
 }
@@ -122,7 +123,7 @@ export async function ensureSchema() {
       ALTER ROLE db_datawriter ADD MEMBER ${quotedTargetName};
     `);
     }
-  })();
+  })().catch((error) => { schemaReady = null; throw error; });
   return schemaReady;
 }
 
