@@ -40,14 +40,15 @@ resource billingDatabase 'Microsoft.Sql/servers/databases@2023-08-01-preview' = 
   location: location
   tags: commonTags
   sku: {
-    name: 'GP_S_Gen5_1'
-    tier: 'GeneralPurpose'
-    family: 'Gen5'
-    capacity: 1
+    name: 'Basic'
+    tier: 'Basic'
+    capacity: 5
   }
   properties: {
-    autoPauseDelay: 60
-    minCapacity: json('0.5')
+    // Basic caps at 2GB. Billing data was 25MB after a year; serverless
+    // General Purpose never auto-paused (health probes poll every 10s) so it
+    // billed the premium vCore rate 24/7 for 0% CPU.
+    maxSizeBytes: 2147483648
     requestedBackupStorageRedundancy: 'Local'
     zoneRedundant: false
   }

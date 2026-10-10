@@ -1,4 +1,4 @@
-import { validateInvoice } from "@/lib/billing";
+import { validateInvoice, remitToAddress } from "@/lib/billing";
 import { authorize } from "@/lib/auth";
 import { ensureSchema, getPool } from "@/lib/db";
 import sql from "mssql";
@@ -14,7 +14,7 @@ export async function GET(request:Request) {
 export async function POST(request:Request) {
   const auth=authorize(request,["Billing.Admin","Billing.Operator"]); if(auth.response)return auth.response;
   try {
-    await ensureSchema(); const invoice=validateInvoice(await request.json()); const pool=await getPool(); const transaction=new sql.Transaction(pool); await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+    await ensureSchema(); const invoice={...validateInvoice(await request.json()),remitTo:remitToAddress()}; const pool=await getPool(); const transaction=new sql.Transaction(pool); await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
     try {
       const customer=await new sql.Request(transaction).input("name",sql.NVarChar(240),invoice.customer).query("SELECT TOP 1 Id FROM dbo.BillingCustomers WHERE LegalName=@name AND Status='Active'");
       if(!customer.recordset.length)throw new Error("Active customer not found");
@@ -30,7 +30,7 @@ export async function POST(request:Request) {
       const contractItemIds=Array.isArray(invoice.contractItemIds)?invoice.contractItemIds.filter((id):id is string=>typeof id==="string"&&id.length<=64):[];
       for(const itemId of contractItemIds) await new sql.Request(transaction).input("itemId",sql.NVarChar(64),itemId).input("customerId",sql.NVarChar(64),customer.recordset[0].Id).query(`UPDATE dbo.BillingContractItems SET LastInvoicedAt=SYSUTCDATETIME(),Status=CASE WHEN BillingType='One-time' THEN 'Completed' ELSE Status END,NextBillingDate=CASE WHEN BillingType='Monthly' THEN DATEADD(month,1,NextBillingDate) WHEN BillingType='Annual' THEN DATEADD(year,1,NextBillingDate) WHEN BillingType='One-time' THEN NULL ELSE NextBillingDate END,UpdatedAt=SYSUTCDATETIME() WHERE Id=@itemId AND EXISTS(SELECT 1 FROM dbo.BillingContracts c WHERE c.Id=ContractId AND c.CustomerId=@customerId)`);
       await new sql.Request(transaction).input("entityId",sql.NVarChar(100),number).input("actorId",sql.NVarChar(100),auth.principal!.userId).input("actorEmail",sql.NVarChar(320),auth.principal!.email).input("after",sql.NVarChar(sql.MAX),JSON.stringify(invoice)).query("INSERT dbo.BillingAuditLog(EntityType,EntityId,Action,ActorId,ActorEmail,AfterJson) VALUES('Invoice',@entityId,'Created',@actorId,@actorEmail,@after)");
-      await transaction.commit(); return Response.json({number,total:invoice.total,currency:invoice.currency},{status:201});
+      await transaction.commit(); return Response.json({number,total:invoice.total,currency:invoice.currency,remitTo:invoice.remitTo},{status:201});
     }catch(error){await transaction.rollback();throw error;}
   }catch(error){console.error(error);return Response.json({error:error instanceof Error?error.message:"Could not create invoice"},{status:400});}
 }

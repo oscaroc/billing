@@ -1,5 +1,9 @@
 export type InvoiceLineInput={description:string;quantity:number;rate:number};
 
+// Where customers mail cheques. Server-side config, never taken from the
+// request body: a client must not be able to redirect payment.
+export function remitToAddress(){return (process.env.REMIT_TO_ADDRESS||"").trim().slice(0,500);}
+
 export function validateInvoice(body:Record<string,unknown>) {
   const lines=Array.isArray(body.lines) ? body.lines.map((raw)=>({description:String(raw?.description || "").trim(),quantity:Number(raw?.quantity),rate:Number(raw?.rate)})) : [];
   const discount=Number(body.discount || 0); const taxRate=Number(body.taxRate || 0);

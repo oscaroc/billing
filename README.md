@@ -28,7 +28,7 @@ az deployment group create --resource-group rg-nivora-prod \
 
 The deployment reuses `nivoraprodacr`, `nivora-prod-cae`, and the
 `nivora-prod-sql2` logical server. It creates the isolated
-`nivora-billing-prod` serverless database, `nivora-billing-prod-id` managed
+`nivora-billing-prod` Basic-tier database, `nivora-billing-prod-id` managed
 identity, and `nivora-billing-prod-app` Container App in `rg-nivora-prod`.
 
 ## Production follow-on

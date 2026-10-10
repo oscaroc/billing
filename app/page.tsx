@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import ContractManager, { type BillingContract, type ContractItem } from "./components/ContractManager";
+import { authFetch } from "@/lib/auth-fetch";
 import BillingGuide from "./components/BillingGuide";
 import InvoiceEditor from "./components/InvoiceEditor";
 
@@ -40,6 +41,7 @@ type GeneratedInvoice = {
   billingAddress: string;
   taxId: string;
   terms: string;
+  remitTo: string;
   lines: LineItem[];
   subtotal: number;
   discount: number;
@@ -113,8 +115,9 @@ export default function Home() {
   const [paymentReference, setPaymentReference] = useState("");
 
   const loadData = async () => {
-    const [customerResponse, invoiceResponse, dashboardResponse, userResponse] = await Promise.all([fetch("/api/customers",{cache:"no-store"}), fetch("/api/invoices",{cache:"no-store"}), fetch("/api/dashboard",{cache:"no-store"}),fetch("/api/me",{cache:"no-store"})]);
-    if (!customerResponse.ok || !invoiceResponse.ok || !dashboardResponse.ok) throw new Error("Database connection unavailable");
+    const [customerResponse, invoiceResponse, dashboardResponse, userResponse] = await Promise.all([authFetch("/api/customers",{cache:"no-store"}), authFetch("/api/invoices",{cache:"no-store"}), authFetch("/api/dashboard",{cache:"no-store"}),authFetch("/api/me",{cache:"no-store"})]);
+    const failed=[customerResponse,invoiceResponse,dashboardResponse].find((response)=>!response.ok);
+    if (failed) throw new Error(failed.status===403?"You do not have permission to view billing data":failed.status===503?"Database connection unavailable":`Billing data could not be loaded (HTTP ${failed.status})`);
     const customerRows: Customer[] = await customerResponse.json();
     const invoiceRows = await invoiceResponse.json();
     const mappedInvoices: Invoice[] = invoiceRows.map((row: { InvoiceNumber:string; CustomerName:string; IssueDate:string; DueDate:string; Amount:number; Balance:number; Status:Invoice["status"];Currency:string }) => ({ number:row.InvoiceNumber, customer:row.CustomerName, initials:row.CustomerName.split(" ").map((part) => part[0]).join("").slice(0,2), color:"coral", issue:new Date(row.IssueDate).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}), due:new Date(row.DueDate).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}), amount:Number(row.Amount), balance:Number(row.Balance), status:row.Status,currency:row.Currency||"USD" }));
@@ -124,7 +127,7 @@ export default function Home() {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadData().catch(() => setToast("Database connection unavailable")).finally(() => setLoading(false));
+    loadData().catch((error) => setToast(error instanceof Error && error.message ? error.message : "Billing data could not be loaded")).finally(() => setLoading(false));
     // Initial production data load only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -174,7 +177,7 @@ export default function Home() {
   const saveCustomer = async () => {
     const editing = Boolean(customerForm.id);
     const record = { ...customerForm, id: customerForm.id || `cus-${Date.now()}` };
-    const response = await fetch(editing ? `/api/customers/${record.id}` : "/api/customers", { method: editing ? "PUT" : "POST", headers: { "Content-Type":"application/json" }, body: JSON.stringify(record) });
+    const response = await authFetch(editing ? `/api/customers/${record.id}` : "/api/customers", { method: editing ? "PUT" : "POST", headers: { "Content-Type":"application/json" }, body: JSON.stringify(record) });
     if (!response.ok) { notify("Customer could not be saved"); return; }
     const saved = await response.json();
     setCustomers((current) => editing ? current.map((item) => item.id === saved.id ? saved : item) : [...current, saved]);
@@ -185,7 +188,7 @@ export default function Home() {
 
   const deleteCustomer = async (record: Customer) => {
     if (invoices.some((invoice) => invoice.customer === record.legalName)) { setPendingDelete(null); notify("Customer has invoices and cannot be deleted"); return; }
-    const response = await fetch(`/api/customers/${record.id}`, { method:"DELETE" });
+    const response = await authFetch(`/api/customers/${record.id}`, { method:"DELETE" });
     if (!response.ok) { setPendingDelete(null); notify("Customer could not be deleted"); return; }
     setCustomers((current) => current.filter((item) => item.id !== record.id));
     setPendingDelete(null); setCustomerMenu(null);
@@ -202,7 +205,7 @@ export default function Home() {
   };
 
   const startNewInvoice = () => {
-    setSourceContract(null); setEditingInvoice(null); setEditingIssueDate(""); setEditingDueDate(""); setLines([{id:Date.now(),description:"Nivora Scale — Monthly",quantity:1,rate:12400}]); setDiscount(0); setTaxRate(0);
+    setSourceContract(null); setEditingInvoice(null); setEditingIssueDate(""); setEditingDueDate(""); setLines([{id:Date.now(),description:"Nivora Scale — Monthly",quantity:1,rate:0}]); setDiscount(0); setTaxRate(0);
     if (customers.length) selectCustomer(customers[0].legalName);
     setInvoiceReturnPage(activePage==="invoice-editor"?"invoices":activePage);setActivePage("invoice-editor");
   };
@@ -216,7 +219,7 @@ export default function Home() {
 
   const editInvoice = async (invoice: Invoice) => {
     setInvoiceMenu(null);
-    const response=await fetch(`/api/invoices/${encodeURIComponent(invoice.number)}`);
+    const response=await authFetch(`/api/invoices/${encodeURIComponent(invoice.number)}`);
     if (!response.ok) { notify("Invoice could not be opened"); return; }
     const record=await response.json(); const payload=record.payload;
     if (!payload) { notify("This invoice has no editable detail"); return; }
@@ -224,24 +227,24 @@ export default function Home() {
   };
 
   const removeInvoice = async (invoice: Invoice) => {
-    const response=await fetch(`/api/invoices/${encodeURIComponent(invoice.number)}`,{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({reason:invoiceRemovalReason})}); const result=await response.json().catch(()=>({}));
+    const response=await authFetch(`/api/invoices/${encodeURIComponent(invoice.number)}`,{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({reason:invoiceRemovalReason})}); const result=await response.json().catch(()=>({}));
     if (!response.ok) { setPendingInvoiceRemoval(null); notify(result.error || "Invoice could not be removed"); return; }
     setPendingInvoiceRemoval(null);setInvoiceRemovalReason(""); setInvoiceMenu(null); await loadData(); notify(result.action === "deleted" ? "Draft invoice deleted" : "Invoice voided");
   };
 
-  const changeInvoiceStatus=async(invoice:Invoice,action:"issue"|"mark-sent")=>{setInvoiceMenu(null);const response=await fetch(`/api/invoices/${encodeURIComponent(invoice.number)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({action})});const result=await response.json().catch(()=>({}));if(!response.ok){notify(result.error||"Invoice status could not be changed");return;}await loadData();notify(action==="issue"?"Invoice issued":"Invoice marked as sent");};
+  const changeInvoiceStatus=async(invoice:Invoice,action:"issue"|"mark-sent")=>{setInvoiceMenu(null);const response=await authFetch(`/api/invoices/${encodeURIComponent(invoice.number)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({action})});const result=await response.json().catch(()=>({}));if(!response.ok){notify(result.error||"Invoice status could not be changed");return;}await loadData();notify(action==="issue"?"Invoice issued":"Invoice marked as sent");};
 
-  const viewInvoice=async(invoice:Invoice)=>{setInvoiceMenu(null);const response=await fetch(`/api/invoices/${encodeURIComponent(invoice.number)}`);if(!response.ok){notify("Invoice could not be opened");return;}const record=await response.json();const payload=record.payload;if(!payload){notify("Invoice detail is unavailable");return;}setGenerated({invoice,billingEmail:payload.billingEmail||"",billingAddress:payload.billingAddress||"",taxId:payload.taxId||"",terms:payload.terms||"",lines:payload.lines||[],subtotal:Number(payload.subtotal||0),discount:Number(payload.discount||0),taxRate:Number(payload.taxRate||0),tax:Number(payload.tax||0),total:Number(payload.total||invoice.amount),notes:payload.notes||""});setShowInvoice(true);};
+  const viewInvoice=async(invoice:Invoice)=>{setInvoiceMenu(null);const response=await authFetch(`/api/invoices/${encodeURIComponent(invoice.number)}`);if(!response.ok){notify("Invoice could not be opened");return;}const record=await response.json();const payload=record.payload;if(!payload){notify("Invoice detail is unavailable");return;}setGenerated({invoice,billingEmail:payload.billingEmail||"",billingAddress:payload.billingAddress||"",taxId:payload.taxId||"",terms:payload.terms||"",remitTo:payload.remitTo||"",lines:payload.lines||[],subtotal:Number(payload.subtotal||0),discount:Number(payload.discount||0),taxRate:Number(payload.taxRate||0),tax:Number(payload.tax||0),total:Number(payload.total||invoice.amount),notes:payload.notes||""});setShowInvoice(true);};
 
   const createInvoice = async () => {
     const issueDate = editingIssueDate ? new Date(`${editingIssueDate}T00:00:00`) : new Date(); const due = editingDueDate ? new Date(`${editingDueDate}T00:00:00`) : new Date(issueDate); if (!editingDueDate) due.setDate(due.getDate() + (terms === "Net 15" ? 15 : terms === "Due on receipt" ? 0 : 30));
     const dueDate = due.toISOString().slice(0,10);
     const payload={ customer, billingEmail, billingAddress, taxId, terms, currency:invoiceCurrency,lines, subtotal, discount, taxRate, tax, total:invoiceTotal, notes, issueDate:issueDate.toISOString().slice(0,10), dueDate, contractId:sourceContract?.id, contractItemIds:sourceContract?.itemIds };
-    const response = await fetch(editingInvoice ? `/api/invoices/${encodeURIComponent(editingInvoice)}` : "/api/invoices", { method:editingInvoice ? "PUT" : "POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) });
+    const response = await authFetch(editingInvoice ? `/api/invoices/${encodeURIComponent(editingInvoice)}` : "/api/invoices", { method:editingInvoice ? "PUT" : "POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) });
     if (!response.ok) { notify("Invoice could not be generated"); return; }
-    const { number } = await response.json();
+    const { number, remitTo } = await response.json();
     const invoice: Invoice = { number, customer, initials: customer.split(" ").map((part) => part[0]).join("").slice(0, 2), color: "coral", issue: issueDate.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}), due: due.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}), amount: invoiceTotal, balance: invoiceTotal, status: "Draft",currency:invoiceCurrency };
-    const fullInvoice = { invoice, billingEmail, billingAddress, taxId, terms, lines: lines.map((line) => ({ ...line })), subtotal, discount, taxRate, tax, total: invoiceTotal, notes };
+    const fullInvoice = { invoice, billingEmail, billingAddress, taxId, terms, remitTo: remitTo || "", lines: lines.map((line) => ({ ...line })), subtotal, discount, taxRate, tax, total: invoiceTotal, notes };
     setInvoices((current)=>editingInvoice ? current.map((item)=>item.number===number ? invoice : item) : [invoice,...current]);
     setGenerated(fullInvoice);
     setActivePage("invoices");
@@ -261,7 +264,7 @@ export default function Home() {
   };
 
   const recordPayment = async () => {
-    const response = await fetch("/api/payments",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":crypto.randomUUID()},body:JSON.stringify({invoiceNumber:paymentInvoice,amount:paymentAmount,paymentDate,method:paymentMethod,reference:paymentReference})});
+    const response = await authFetch("/api/payments",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":crypto.randomUUID()},body:JSON.stringify({invoiceNumber:paymentInvoice,amount:paymentAmount,paymentDate,method:paymentMethod,reference:paymentReference})});
     if (!response.ok) { const result=await response.json().catch(()=>({})); notify(result.error || "Payment could not be recorded"); return; }
     setShowPayment(false); await loadData(); notify("Payment recorded and dashboard updated");
   };
@@ -289,7 +292,14 @@ export default function Home() {
     if (generated.discount > 0) { y += 22; doc.text("Discount", labelX, y); doc.text(`-${money(generated.discount,invoice.currency)}`, 552, y, { align: "right" }); }
     y += 22; doc.text(`Tax (${generated.taxRate}%)`, labelX, y); doc.text(money(generated.tax,invoice.currency), 552, y, { align: "right" }); y += 18;
     doc.setDrawColor(22, 63, 53); doc.line(395, y, 564, y); y += 25; doc.setFont("helvetica", "bold"); doc.setFontSize(14); doc.text("Total", labelX, y); doc.text(money(generated.total,invoice.currency), 552, y, { align: "right" });
-    doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.text("NOTES", 48, 650); doc.setFont("helvetica", "normal"); doc.setTextColor(92, 102, 97); doc.text(doc.splitTextToSize(generated.notes, 330), 48, 667);
+    doc.setFontSize(8); let blockY = generated.remitTo ? 600 : 650;
+    if (generated.remitTo) {
+      doc.setFont("helvetica", "bold"); doc.setTextColor(24, 33, 30); doc.text("REMIT PAYMENT TO", 48, blockY);
+      const remitLines = doc.splitTextToSize(generated.remitTo, 330);
+      doc.setFont("helvetica", "normal"); doc.setTextColor(92, 102, 97); doc.text(remitLines, 48, blockY + 15);
+      blockY += 15 + remitLines.length * 11 + 12;
+    }
+    doc.setFont("helvetica", "bold"); doc.setTextColor(24, 33, 30); doc.text("NOTES", 48, blockY); doc.setFont("helvetica", "normal"); doc.setTextColor(92, 102, 97); doc.text(doc.splitTextToSize(generated.notes, 330), 48, blockY + 17);
     doc.setFillColor(22, 63, 53); doc.rect(0, 748, 612, 44, "F"); doc.setTextColor(255, 255, 255); doc.text("Nivora · billing@nivora.com · nivora.com", 306, 773, { align: "center" });
     doc.save(`${invoice.number}.pdf`);
     notify("PDF downloaded");
@@ -376,7 +386,7 @@ export default function Home() {
       {contractCustomer && <ContractManager customer={contractCustomer} onClose={()=>{setContractCustomer(null);loadData().catch(()=>notify("Customer renewal refresh failed"));}} onInvoice={invoiceContract}/>} 
       {pendingDelete && <div className="modal-backdrop confirm-backdrop" role="presentation" onMouseDown={() => setPendingDelete(null)}><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" onMouseDown={(event) => event.stopPropagation()}><span className="danger-icon">!</span><h2 id="delete-title">Delete {pendingDelete.legalName}?</h2><p>This permanently removes the customer record. Customers with invoices cannot be deleted.</p><div><button onClick={() => setPendingDelete(null)}>Cancel</button><button className="danger-button" onClick={() => deleteCustomer(pendingDelete)}>Delete customer</button></div></section></div>}
       {pendingInvoiceRemoval && <div className="modal-backdrop confirm-backdrop" role="presentation" onMouseDown={()=>setPendingInvoiceRemoval(null)}><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="invoice-remove-title" onMouseDown={(event)=>event.stopPropagation()}><span className="danger-icon">!</span><h2 id="invoice-remove-title">{pendingInvoiceRemoval.status==="Draft" ? "Delete" : "Void"} {pendingInvoiceRemoval.number}?</h2><p>{pendingInvoiceRemoval.status==="Draft" ? "This permanently removes the draft invoice." : "This keeps the audit record but sets its balance to zero."}</p>{pendingInvoiceRemoval.status!=="Draft"&&<input aria-label="Void reason" placeholder="Reason for voiding" value={invoiceRemovalReason} onChange={(event)=>setInvoiceRemovalReason(event.target.value)}/>}<div><button onClick={()=>setPendingInvoiceRemoval(null)}>Cancel</button><button className="danger-button" disabled={pendingInvoiceRemoval.status!=="Draft"&&!invoiceRemovalReason.trim()} onClick={()=>removeInvoice(pendingInvoiceRemoval)}>{pendingInvoiceRemoval.status==="Draft" ? "Delete draft" : "Void invoice"}</button></div></section></div>}
-      {showInvoice && generated && <div className="modal-backdrop invoice-preview-backdrop" role="presentation" onMouseDown={() => setShowInvoice(false)}><section className="modal invoice-preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title" onMouseDown={(event) => event.stopPropagation()}><div className="preview-toolbar"><div><strong id="preview-title">{generated.invoice.number}</strong><small>{generated.invoice.status} · Ready to print</small></div><div><button onClick={() => window.print()}>Print</button><button className="primary" onClick={downloadPdf}>↓ Download PDF</button><button className="close-preview" onClick={() => setShowInvoice(false)}>×</button></div></div><article className="invoice-paper"><header><div className="invoice-brand"><Image src="/nivora-logo.webp" width={1256} height={262} alt="Nivora" /><small>Subscription intelligence</small></div><div><h2>INVOICE</h2><p>{generated.invoice.number}</p></div></header><section className="invoice-parties"><div><small>BILL TO</small><strong>{generated.invoice.customer}</strong><p>{generated.billingAddress.split("\n").map((row) => <span key={row}>{row}<br /></span>)}</p><p>{generated.billingEmail}<br />Tax ID: {generated.taxId || "—"}</p></div><div className="invoice-meta"><p><span>Issue date</span><strong>{generated.invoice.issue}</strong></p><p><span>Due date</span><strong>{generated.invoice.due}</strong></p><p><span>Terms</span><strong>{generated.terms}</strong></p><p><span>Currency</span><strong>{generated.invoice.currency}</strong></p></div></section><table className="invoice-lines"><thead><tr><th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody>{generated.lines.map((line) => <tr key={line.id}><td>{line.description}</td><td>{line.quantity}</td><td>{money(line.rate,generated.invoice.currency)}</td><td>{money(line.quantity * line.rate,generated.invoice.currency)}</td></tr>)}</tbody></table><section className="invoice-bottom"><div><small>NOTES</small><p>{generated.notes}</p></div><div><p><span>Subtotal</span><strong>{money(generated.subtotal,generated.invoice.currency)}</strong></p>{generated.discount > 0 && <p><span>Discount</span><strong>−{money(generated.discount,generated.invoice.currency)}</strong></p>}<p><span>Tax ({generated.taxRate}%)</span><strong>{money(generated.tax,generated.invoice.currency)}</strong></p><p className="grand-total"><span>Total due</span><strong>{money(generated.total,generated.invoice.currency)}</strong></p></div></section><footer>Questions? Contact billing@nivora.com · Thank you for your business.</footer></article></section></div>}
+      {showInvoice && generated && <div className="modal-backdrop invoice-preview-backdrop" role="presentation" onMouseDown={() => setShowInvoice(false)}><section className="modal invoice-preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title" onMouseDown={(event) => event.stopPropagation()}><div className="preview-toolbar"><div><strong id="preview-title">{generated.invoice.number}</strong><small>{generated.invoice.status} · Ready to print</small></div><div><button onClick={() => window.print()}>Print</button><button className="primary" onClick={downloadPdf}>↓ Download PDF</button><button className="close-preview" onClick={() => setShowInvoice(false)}>×</button></div></div><article className="invoice-paper"><header><div className="invoice-brand"><Image src="/nivora-logo.webp" width={1256} height={262} alt="Nivora" /><small>Subscription intelligence</small></div><div><h2>INVOICE</h2><p>{generated.invoice.number}</p></div></header><section className="invoice-parties"><div><small>BILL TO</small><strong>{generated.invoice.customer}</strong><p>{generated.billingAddress.split("\n").map((row) => <span key={row}>{row}<br /></span>)}</p><p>{generated.billingEmail}<br />Tax ID: {generated.taxId || "—"}</p></div><div className="invoice-meta"><p><span>Issue date</span><strong>{generated.invoice.issue}</strong></p><p><span>Due date</span><strong>{generated.invoice.due}</strong></p><p><span>Terms</span><strong>{generated.terms}</strong></p><p><span>Currency</span><strong>{generated.invoice.currency}</strong></p></div></section><table className="invoice-lines"><thead><tr><th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody>{generated.lines.map((line) => <tr key={line.id}><td>{line.description}</td><td>{line.quantity}</td><td>{money(line.rate,generated.invoice.currency)}</td><td>{money(line.quantity * line.rate,generated.invoice.currency)}</td></tr>)}</tbody></table><section className="invoice-bottom"><div>{generated.remitTo?<><small>REMIT PAYMENT TO</small><p className="remit-to">{generated.remitTo}</p></>:null}<small>NOTES</small><p>{generated.notes}</p></div><div><p><span>Subtotal</span><strong>{money(generated.subtotal,generated.invoice.currency)}</strong></p>{generated.discount > 0 && <p><span>Discount</span><strong>−{money(generated.discount,generated.invoice.currency)}</strong></p>}<p><span>Tax ({generated.taxRate}%)</span><strong>{money(generated.tax,generated.invoice.currency)}</strong></p><p className="grand-total"><span>Total due</span><strong>{money(generated.total,generated.invoice.currency)}</strong></p></div></section><footer>Questions? Contact billing@nivora.com · Thank you for your business.</footer></article></section></div>}
       {showPayment && <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowPayment(false)}><section className="modal payment-modal" role="dialog" aria-modal="true" aria-labelledby="payment-title" onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><div><p className="eyebrow">Accounts receivable</p><h2 id="payment-title">Record payment</h2></div><button onClick={() => setShowPayment(false)} aria-label="Close">×</button></div><div className="form-grid"><label>Invoice<select value={paymentInvoice} onChange={(event)=>selectPaymentInvoice(event.target.value)}>{invoices.filter((invoice)=>invoice.balance>0).map((invoice)=><option key={invoice.number} value={invoice.number}>{invoice.number} · {invoice.customer} · {money(invoice.balance,invoice.currency)} due</option>)}</select></label><label>Amount<input type="number" min="0.01" step="0.01" value={paymentAmount} onChange={(event)=>setPaymentAmount(Number(event.target.value))} /></label><label>Payment date<input type="date" value={paymentDate} onChange={(event)=>setPaymentDate(event.target.value)} /></label><label>Method<select value={paymentMethod} onChange={(event)=>setPaymentMethod(event.target.value)}><option>Bank transfer</option><option>Credit card</option><option>Check</option></select></label><label className="full">Transaction or check reference<input value={paymentReference} onChange={(event)=>setPaymentReference(event.target.value)} placeholder="e.g. ACH-840193" /></label></div><div className="modal-actions"><button onClick={() => setShowPayment(false)}>Cancel</button><button className="primary" disabled={!paymentInvoice || paymentAmount <= 0 || paymentAmount > (invoices.find((invoice)=>invoice.number===paymentInvoice)?.balance || 0)} onClick={recordPayment}>Record payment</button></div></section></div>}
       {toast && <div className="toast"><span>✓</span>{toast}</div>}
     </div>
