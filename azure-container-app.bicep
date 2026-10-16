@@ -15,6 +15,10 @@ param appName string = 'nivora-billing-prod-app'
 param identityName string = 'nivora-billing-prod-id'
 param imageTag string
 
+@description('Custom domain and its existing managed certificate in the environment')
+param customDomainName string = 'billing.nivoranorth.com'
+param customDomainCertificateName string = 'billing.nivoranorth.com-nivora-p-260827051936'
+
 var commonTags = {
   Application: 'Billing'
   Environment: 'Production'
@@ -89,6 +93,14 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 8080
         transport: 'auto'
         allowInsecure: false
+        // Must stay declared here: a deploy without it drops the binding and the domain stops working.
+        customDomains: [
+          {
+            name: customDomainName
+            certificateId: '${environment.id}/managedCertificates/${customDomainCertificateName}'
+            bindingType: 'SniEnabled'
+          }
+        ]
       }
       registries: [
         {
