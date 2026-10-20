@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request:Request) {
   const auth=authorize(request,["Billing.Admin","Billing.Operator","Billing.Reader"]);if(auth.response)return auth.response;
-  try { await ensureSchema(); const result = await (await getPool()).request().query("SELECT c.*,contracts.ContractCount,contracts.ActiveContractCount,contracts.NextContractRenewal FROM dbo.BillingCustomers c OUTER APPLY (SELECT COUNT(*) AS ContractCount,SUM(CASE WHEN bc.Status='Active' THEN 1 ELSE 0 END) AS ActiveContractCount,MIN(CASE WHEN bc.Status='Active' AND bc.RenewalDate>=CAST(GETUTCDATE() AS date) THEN bc.RenewalDate END) AS NextContractRenewal FROM dbo.BillingContracts bc WHERE bc.CustomerId=c.Id) contracts ORDER BY c.LegalName"); return Response.json(result.recordset.map(customerFromRow)); }
+  try { await ensureSchema(); const result = await (await getPool()).request().query("SELECT c.*,contracts.ContractCount,contracts.ActiveContractCount,contracts.NextContractRenewal FROM dbo.BillingCustomers c OUTER APPLY (SELECT COUNT(*) AS ContractCount,SUM(live.IsLive) AS ActiveContractCount,MIN(CASE WHEN live.IsLive=1 AND bc.RenewalDate>=CAST(GETUTCDATE() AS date) THEN bc.RenewalDate END) AS NextContractRenewal FROM dbo.BillingContracts bc CROSS APPLY (SELECT CASE WHEN bc.Status='Active' AND EXISTS(SELECT 1 FROM dbo.BillingContractItems i WHERE i.ContractId=bc.Id AND i.Status='Active' AND (i.BillingEnd IS NULL OR i.BillingEnd>=CAST(GETUTCDATE() AS date))) THEN 1 ELSE 0 END AS IsLive) live WHERE bc.CustomerId=c.Id) contracts ORDER BY c.LegalName"); return Response.json(result.recordset.map(customerFromRow)); }
   catch (error) { console.error(error); return Response.json({ error: "Database unavailable" }, { status: 503 }); }
 }
 
